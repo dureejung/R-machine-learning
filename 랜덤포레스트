@@ -1,0 +1,173 @@
+library(tidyverse)
+getwd()
+list.files()
+load(file="Bank_DataSet.RDA"  )
+
+library(randomForest)
+set.seed(1234)
+fit1<-randomForest(formula = PersonalLoan~.,
+                   data = trainSet,
+                   ntree = 1000,
+                   mtry = 3,
+                   importance = TRUE,
+                   do.trace = 50,
+                   keep.forest = T)
+print(fit1)
+##읽는법
+# OOB estimate of  error rate: 1.24%
+# Confusion matrix:
+#      0   1 class.error
+# 0 3119   5 0.001600512 (<-5/3124)
+# 1   38 301 0.112094395 (<-38/339)
+
+print(fit1$err.rate)
+print(fit1$err.rate[,1])
+tail(fit1$err.rate[,1],n=1L)
+plot(fit1)
+
+importance(fit1,type = 1)
+varImpPlot(fit1,type = 1)
+
+
+real<-testSet$PersonalLoan
+pred1<-predict(fit1,newdata = testSet,type = 'response')
+table(pred1,real)
+#           real
+# pred1    0    1
+#     0 1341   15
+#     1    3  126
+#실제값과 추정값이 같은지 다른지 쉽게 확인 가능
+
+prob1<-predict(fit1,newdata = testSet,type = 'vote')[,2] #컬럼 0과 컬럼 1 중 우리가 관심있는 값인 1만 가져오려고
+head(prob1)
+
+library(caret)
+confusionMatrix(pred1,reference = real, positive = '1')
+
+# 민감도 Sensitivity : 0.89362   
+# 정밀도 Pos Pred Value : 0.97674
+
+library(MLmetrics)
+F1_Score(y_true = real, y_pred = pred1,positive = '1')
+# [1] 0.9333333
+
+library(pROC)
+roc(response=real,predictor = prob1)%>%
+  plot(main='ROC Curve',col='red',lty=1)
+
+
+##그리드생성
+grid<-expand.grid(ntree=c(300,500,700,1000),
+                  mtry=c(3,4,5,6,7),
+                  error=NA)
+print(grid) #ntree4개*mtry5개=20개 행 생성
+
+#반복문 사용한 모형 튜닝
+#결과는 Environment Data창에 표로 저장됨
+n<- nrow(grid)
+for(i in 1:n){
+  ntree<- grid$ntree[i]
+  mtry<- grid$mtry[i]
+  disp<- str_glue('현재 {i}번째 행 실행중! [ntree: {ntree},
+                  mtry : {mtry}]')
+  cat(disp,'\n\n')
+  set.seed(1234)
+  fit<- randomForest(formula = PersonalLoan~.,
+                     data = trainSet,
+                     ntree = ntree,
+                     mtry = mtry)
+  grid$error[i]<- tail(x=fit$err.rate[,1],n=1L)
+}
+
+#보기쉽게 그래프로 그리기
+plot(grid$error,type = 'b',pch=19,col='red',
+     main = 'Grid Search Result')
+
+#최소값 직선 추가
+abline(h=min(grid$error),col='red',lty=2)
+
+#최적의 파라미터 설정
+loc<- which.min(grid$error)
+print(loc)
+bestPara<- grid[loc,]
+print(bestPara)
+
+#OOB오차가 최소인 하이퍼파라미터로 모형 적합
+set.seed(1234)
+best<-randomForest(formula = PersonalLoan~.,
+                   data = trainSet,
+                   ntree = bestPara$ntree,
+                   mtry = bestPara$mtry,
+                   importance = TRUE)
+print(best)
+# OOB estimate of  error rate: 1.33%
+# Confusion matrix:
+#      0   1 class.error
+# 0 3113  11 0.003521127
+# 1   35 304 0.103244838
+# 하이퍼파라 적합 전보다 우리가 관심있는 1값을 더 많이 맞혔다
+
+plot(best,main='Best Fit')
+importance(best,type = 1)
+varImpPlot(best,main = 'Variable Importance',type = 1)
+
+#도출해낸 중요도 순서를 가지고 해석해보자
+#중요도 가장 높은 income으로 박스플랏 그려보기
+boxplot(formula= Income~ PersonalLoan,
+        data = trainSet)
+#박스플랏에 평균추가
+avg<- trainSet%>%
+  group_by(PersonalLoan)%>%
+  summarise(m=mean(Income))
+
+points(formula=m~PersonalLoan,
+       data = avg,
+       pch=19,
+       col='red',
+       cex= 1.2)
+
+#education은 범주형이라 박스플랏ㄴㄴ ->크로스테이블
+library(gmodels)
+CrossTable(x=trainSet$Education,
+           y=trainSet$PersonalLoan,)
+# Cell Contents
+#   |-------------------------|
+#   |                       N |
+#   | Chi-square contribution |
+#   |           N / Row Total |
+#   |           N / Col Total |
+#   |         N / Table Total |
+#   |-------------------------|
+#첫번째 줄은 빈도수
+#두번째 줄은 카이제곱 통계량
+#카이제곱 통계량이 0이라고 한다면 두 개의 변수는 서로 독립적이다(무관하다)
+#카이제곱 통계량 숫자가 클수록 두 개의 변수는 무관하지 않다
+#세번째 줄은 로우토탈에 대한 빈도수의 비중
+#                      | trainSet$PersonalLoan 
+#   trainSet$Education |         0 |         1 | Row Total | 
+#   -------------------|-----------|-----------|-----------|
+#                    1 |      1354 |        68 |      1422 | 
+#                      |     3.952 |    36.420 |           | 
+#                      |     0.952 |     0.048 |     0.411 | 
+#                      |     0.433 |     0.201 |           | 
+#                      |     0.391 |     0.020 |           | 
+#여기서  N / Row Total은 0인 사람(돈빌리지 않은 사람)이 95%, 1인 사람(돈 빌린 사람)이 5%라는 뜻
+#끝까지 살펴보니 교육수준이 높아질수록(3에 가까울수록) 돈 빌리는 비율이 높아진다
+
+
+#성능평가
+pred2<-predict(best,newdata = testSet,type = 'response')
+confusionMatrix(pred2,reference = real, positive = '1')
+F1_Score(y_true = real, y_pred = pred2, positive = '1')
+prob2<-predict(best,newdata = testSet, type = 'vote')[,2]
+roc(response = real, predictor = prob2)%>%
+  plot(col='blue', lty=1, add=T)
+auc(response = real, predictor = prob2)
+
+
+
+
+
+
+
+saveRDS(best,file='RandomForest.RDS')
